@@ -1,0 +1,265 @@
+---
+title: "Assignment 2"
+author: "George Wu"
+date: "14/10/2022"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r loading abalone data, message = FALSE}
+library(tidyverse)
+library(data.table)
+library(GGally)
+library(sjPlot)
+library(caret)
+library(performance)
+abalone_data_url <- 'https://archive.ics.uci.edu/ml/machine-learning-databases/abalone/abalone.data'
+abalone_data <- fread(abalone_data_url)
+```
+
+```{r changing columns}
+old_col_names = colnames(abalone_data)
+#We have a look at the abalone metadata from the UCI machine learning repository (source: http://archive.ics.uci.edu/ml/datasets/Abalone)
+# Sex / nominal / -- / M, F, and I (infant)
+# Length / continuous / mm / Longest shell measurement
+# Diameter / continuous / mm / perpendicular to length
+# Height / continuous / mm / with meat in shell
+# Whole weight / continuous / grams / whole abalone
+# Shucked weight / continuous / grams / weight of meat
+# Viscera weight / continuous / grams / gut weight (after bleeding)
+# Shell weight / continuous / grams / after being dried
+# Rings / integer / -- / +1.5 gives the age in years (dependent variable)
+new_col_names = c("sex", "length", "diameter", "height", "whole_weight", "shucked_weight", "viscera_weight", "shell_weight", "rings")
+colnames(abalone_data) = new_col_names
+```
+
+```{r looking at data}
+dim(abalone_data)
+class(abalone_data)
+```
+
+```{r multiple regression setup, message = FALSE}
+GGally::ggpairs(abalone_data) + theme_classic()
+ggsave(filename = "multiplreregressiongraph.png")
+```
+
+```{r null vs full model}
+M0 = lm(rings ~ 1, data = abalone_data)  # Null model
+M1 = lm(rings ~ ., data = abalone_data)  # Full model
+round(summary(M1)$coef, 3)
+```
+
+```{r}
+res = bind_rows(broom::glance(M1), 
+                broom::glance(M0))
+res$model= c("M1","M0")
+res %>% pivot_longer(
+  cols = -model, 
+  names_to = "metric", 
+  values_to = "value") %>% 
+  pivot_wider(
+    names_from = "model") %>% 
+  gt::gt() %>% 
+  gt::fmt_number(columns = 2:3, 
+                 decimals = 2) %>% 
+  gt::fmt_missing()
+```
+
+```{r AIC backwards}
+step.back.aic = step(M1, 
+                     direction = "backward", 
+                     trace = FALSE)
+round(summary(step.back.aic)$coef,3)
+```
+
+```{r drop variables for model}
+drop1(step.back.aic, test = "F")
+```
+
+```{r AIC forwards}
+step.fwd.aic = step(M0,
+                    scope = list(lower = M0, upper = M1),
+                    direction = "forward", 
+                    trace = FALSE)
+round(summary(step.fwd.aic)$coef,3)
+```
+```{r add1}
+add1(step.fwd.aic, test = "F", scope = M1)
+```
+```{r AIC comparison}
+sjPlot::tab_model(step.fwd.aic, step.back.aic, show.ci = FALSE, show.aic = TRUE,
+                  dv.labels = c("Forward model", "Backward model"))
+```
+
+```{r multiple regression model}
+lm_abalone = lm(rings ~ sex + diameter + shucked_weight + shell_weight, abalone_data)
+summary(lm_abalone)$coefficients |> round(4)
+```
+```{r}
+summary(lm_abalone)$r.squared
+```
+
+```{r in-sample performance}
+sjPlot::tab_model(lm_abalone, digits = 3,
+                  show.ci = FALSE,
+                  dv.labels = "Log Rings")
+```
+
+```{r shell weight vs rings scatterplot}
+scatter_one = ggplot(data = abalone_data, aes(x = rings, y = shell_weight)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  labs(x = "Abalone age", y = "Abalone shell weight", title = "Relationship between abalone age and their shell weight")
+scatter_one
+ggsave(filename = "scatterone.png")
+```
+
+```{r abalone age vs diameter}
+scatter_two = ggplot(data = abalone_data, aes(x = rings, y = diameter)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  labs(x = "Abalone age", y = "Abalone diameter", title = "Relationship between abalone age and their diameter")
+scatter_two
+ggsave(filename = "scattertwo.png")
+```
+
+```{r abalone age vs shucked weight}
+scatter_three = ggplot(data = abalone_data, aes(x = rings, y = shucked_weight)) + 
+  geom_point() + 
+  geom_smooth(method = "lm") +
+  labs(x = "Abalone age", y = "Abalone meat weight", title = "Relationship between abalone age and their shucked weight")
+scatter_three
+ggsave(filename = "scatterthree.png")
+```
+
+```{r out of sample performance}
+n = nrow(abalone_data)
+n
+#create training and test data from original abalone dataset
+n_train = floor(0.8*n)
+n_test = n - n_train
+group_labels = rep(c("Train", "Test"), times = c(n_train, n_test))
+abalone_data$group = sample(group_labels)
+train_data = abalone_data %>%
+  filter(group == "Train")
+lm_simple_train = lm(rings ~ whole_weight, data = train_data)
+lm_full_train = lm(rings ~ sex + diameter + shucked_weight + shell_weight, data = train_data)
+test_data = abalone_data %>%
+  filter(group == "Test")
+simple_prediction = predict(lm_simple_train, newdata = test_data)
+full_prediction = predict(lm_full_train, newdata = test_data)
+```
+
+```{r compare root mean square error}
+simple_mse = mean((test_data$rings - simple_prediction)^2)
+simple_rmse = sqrt(simple_mse)
+simple_rmse
+full_mse = mean((test_data$rings - full_prediction)^2)
+full_rmse = sqrt(full_mse)
+full_rmse
+```
+
+```{r compare mean absolute error}
+simple_mae = mean(abs(test_data$rings - simple_prediction))
+simple_mae
+full_mae = mean(abs(test_data$rings - full_prediction))
+full_mae
+```
+
+```{r 10-fold cross validation}
+cv_full = train(
+  rings ~ sex + diameter + shucked_weight + shell_weight, abalone_data,
+  method = "lm",
+  trControl = trainControl(
+    method = "cv", number = 10,
+    verboseIter = FALSE
+  )
+)
+cv_full
+```
+
+```{r 10-fold cross validation simple}
+cv_simple = train(
+  rings ~ sex + whole_weight, abalone_data,
+  method = "lm",
+  trControl = trainControl(
+    method = "cv", number = 10,
+    verboseIter = FALSE
+  )
+)
+cv_simple
+```
+
+```{r store results}
+results <- resamples(list(simple = cv_simple, full = cv_full))
+```
+
+```{r MAE plot}
+ggplot(results, metric = "MAE") + 
+  labs(y = "MAE")
+ggsave(filename = "mae.png")
+```
+
+```{r RMSE plot}
+ggplot(results, metric = "RMSE") + 
+  labs(y = "RMSE")
+ggsave(filename = "rmse.png")
+```
+
+```{r R-squared plot}
+ggplot(results, metric = "Rsquared") + 
+  labs(y = "Rsquared")
+ggsave(filename = "rsquared.png")
+```
+```{r}
+mean(abalone_data$rings)
+```
+
+```{r 10-fold results full model}
+model_fold <- cv_full$resample
+model_fold
+```
+
+```{r 10-fold results simple model}
+model_simple <- cv_simple$resample
+model_simple
+```
+
+```{r f-test}
+group = rep(c('sex', 'diameter', 'shucked_weight', 'shell_weight'))
+abalone.ftest <- var.test(rings ~ group, data = abalone_data, alternative = "two.sided")
+abalone.ftest
+```
+
+```{r predicted vs actual}
+full_model = lm(rings ~ sex + diameter + shucked_weight + shell_weight, data = abalone_data)
+simple_model = lm(rings ~ whole_weight, data = abalone_data)
+model_results <- compare_performance(simple_model, full_model)
+abalone_data$predicted_rings <- predict(full_model)
+ggplot(abalone_data, aes(x = predicted_rings, y = rings)) +
+  geom_point() +
+  geom_abline(intercept=0, slope=1) +
+  labs(x='Predicted Values', y='Actual Values', title='Predicted vs. Actual Values')
+ggsave(filename = "predictedvsactual.png")
+```
+
+```{r posterior predictive check}
+check_posterior_predictions(full_model, check_range = TRUE)
+```
+
+```{r model comparison}
+model_results
+```
+
+```{r outliers}
+outlier_check <- check_outliers(full_model)
+plot(outlier_check, type = "dots")
+```
+
+```{r normality}
+normality_check <- check_normality(full_model)
+plot(normality_check)
+```
